@@ -7,9 +7,14 @@ DARK_BG = "#121212"
 DARK_FG = "#f0f0f0"
 ACCENT = "#3f51b5"
 
-class ItemCreator(tk.Tk):
-    def __init__(self):
-        super().__init__()
+class ItemCreator(tk.Toplevel):
+    def __init__(self, parent=None):
+        if parent is None:
+            parent = tk.Tk()
+            parent.withdraw()
+        super().__init__(parent)
+        self.transient(parent)
+        self.grab_set()
         self.title("Standalone Item Creator")
         self.configure(bg=DARK_BG)
 
@@ -321,5 +326,7 @@ class ItemCreator(tk.Tk):
         messagebox.showinfo("Item Saved", f"Item '{name}' saved to {item_folder}.")
 
 if __name__ == "__main__":
-    app = ItemCreator()
-    app.mainloop()
+    root = tk.Tk()
+    root.withdraw()
+    ItemCreator(root)
+    root.mainloop()
