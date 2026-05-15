@@ -5,6 +5,7 @@ from openpyxl import load_workbook
 import os
 import time
 import threading
+import random
 
 DARK_BG = "#121212"
 DARK_FG = "#f0f0f0"
@@ -23,6 +24,11 @@ HEALTH_CELL_MAP = {
     "Mind": "X11",
     "Soul": "X12",
     "Unconscious": "X13",
+}
+HEALTH_STAT_CELL_MAP = {
+    "Body Health": "Y10",
+    "Mind Health": "Y11",
+    "Soul Health": "Y12",
 }
 NAME_CELL = "V5"
 CHARGES_CELL = "B2"
@@ -93,6 +99,7 @@ class DnDApp(tk.Tk):
         self.stat_levels = {}
         self.stat_health = {}
         self.max_health = {}
+        self.health_stat_mods = {"Body Health": 0, "Mind Health": 0, "Soul Health": 0}
         self.charges = 0
 
         self._load_stats()
@@ -123,10 +130,17 @@ class DnDApp(tk.Tk):
         self.items_frame = tk.Frame(self.notebook, bg=DARK_BG)
         self.notebook.add(self.items_frame, text="ITEMS")
 
+        self.inventory_grid_frame = tk.Frame(self.notebook, bg=DARK_BG)
+        self.notebook.add(self.inventory_grid_frame, text="INVENTORY GRID")
+
+        # Auto-load items from items folder
+        self._auto_load_items()
         self._build_items_tab()
+        self._build_inventory_grid_tab()
 
         self.health_bars = {}
         self.health_labels = {}
+        self.health_bar_widgets = {}
         self._build_stats_tab()
         # Red health bar style
         self.style.configure(
@@ -161,7 +175,7 @@ class DnDApp(tk.Tk):
             text="Inventory (max 5 active items)",
             bg=DARK_BG,
             fg=DARK_FG,
-            font=("Papyrus", 14, "bold"),
+            font=("Papyrus", 16, "bold"),
         ).pack(side="left", padx=10)
 
         tk.Button(
@@ -210,6 +224,161 @@ class DnDApp(tk.Tk):
         self.items.append(item)
         self._render_item_row(item)
 
+    def _build_inventory_grid_tab(self):
+        """Build the inventory grid display tab"""
+        for w in self.inventory_grid_frame.winfo_children():
+            w.destroy()
+
+        tk.Label(
+            self.inventory_grid_frame,
+            text="Inventory Grid",
+            bg=DARK_BG,
+            fg=DARK_FG,
+            font=("Papyrus", 16, "bold"),
+        ).pack(pady=10)
+
+        # Create a canvas-based grid for better organization
+        container = tk.Frame(self.inventory_grid_frame, bg=DARK_BG)
+        container.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Scrollable frame for items
+        canvas = tk.Canvas(container, bg=DARK_BG, highlightthickness=0)
+        scrollbar = tk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        grid_frame = tk.Frame(canvas, bg=DARK_BG)
+
+        grid_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=grid_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Display items in a 4-column grid layout
+        COLS = 4
+        col = 0
+        row_frame = tk.Frame(grid_frame, bg=DARK_BG)
+        row_frame.pack(fill="x", padx=5, pady=5)
+
+        for i, item in enumerate(self.items):
+            self._create_grid_item_widget(item, row_frame)
+            col += 1
+            
+            if col >= COLS:
+                col = 0
+                row_frame = tk.Frame(grid_frame, bg=DARK_BG)
+                row_frame.pack(fill="x", padx=5, pady=5)
+
+    def _create_grid_item_widget(self, item, parent_row):
+        """Create a visual widget for an item in the grid"""
+        size = int(item.get("size", 1))
+        name = item["name"]
+        
+        # Create container with appropriate size
+        item_widget = tk.Frame(
+            parent_row,
+            bg="#3a3a3a",
+            relief=tk.RAISED,
+            borderwidth=2,
+            width=200,
+            height=(size * 60),
+        )
+        item_widget.pack(side="left", padx=5, pady=5, fill="both", expand=True)
+        item_widget.pack_propagate(False)
+        
+        # Add item image if available
+        if item.get("image"):
+            try:
+                from PIL import Image, ImageTk
+                img = Image.open(item["image"])
+                img.thumbnail((180, (size * 50)))
+                photo = ImageTk.PhotoImage(img)
+                img_lbl = tk.Label(item_widget, image=photo, bg="#3a3a3a")
+                img_lbl.image = photo
+                img_lbl.pack(pady=5)
+            except Exception:
+                pass
+        
+        # Add item name
+        name_lbl = tk.Label(
+            item_widget,
+            text=name,
+            bg="#3a3a3a",
+            fg=DARK_FG,
+            font=("Papyrus", 10, "bold"),
+            wraplength=180
+        )
+        name_lbl.pack(padx=5, pady=2)
+        
+        # Add size indicator
+        size_text = {1: "1x1", 2: "1x2", 4: "2x2" if item.get("orientation") == "vertical" else "1x4"}.get(size, "1x1")
+        tk.Label(
+            item_widget,
+            text=f"Size: {size_text}",
+            bg="#3a3a3a",
+            fg="#888888",
+            font=("Papyrus", 8)
+        ).pack(pady=2)
+        
+        # Add context menu for repositioning
+        def show_context_menu(event):
+            menu = tk.Menu(self, tearoff=False, bg=DARK_BG, fg=DARK_FG)
+            menu.add_command(
+                label="Move Up (Row-1)",
+                command=lambda: self._move_item(item, -1, 0)
+            )
+            menu.add_command(
+                label="Move Down (Row+1)",
+                command=lambda: self._move_item(item, 1, 0)
+            )
+            menu.add_command(
+                label="Move Left (Col-1)",
+                command=lambda: self._move_item(item, 0, -1)
+            )
+            menu.add_command(
+                label="Move Right (Col+1)",
+                command=lambda: self._move_item(item, 0, 1)
+            )
+            menu.add_separator()
+            menu.add_command(
+                label="Reset Position",
+                command=lambda: self._reset_item_position(item)
+            )
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+        
+        item_widget.bind("<Button-3>", show_context_menu)  # Right-click
+        name_lbl.bind("<Button-3>", show_context_menu)
+        
+        # Store reference for later updates
+        item["grid_widget"] = item_widget
+
+    def _move_item(self, item, row_delta, col_delta):
+        """Move an item in the grid"""
+        current_row = item.get("grid_row", 0)
+        current_col = item.get("grid_col", 0)
+        
+        new_row = max(0, current_row + row_delta)
+        new_col = max(0, current_col + col_delta)
+        
+        item["grid_row"] = new_row
+        item["grid_col"] = new_col
+        
+        self._save_all()
+        self._build_inventory_grid_tab()
+
+    def _reset_item_position(self, item):
+        """Reset an item to position (0, 0)"""
+        item["grid_row"] = 0
+        item["grid_col"] = 0
+        self._save_all()
+        self._build_inventory_grid_tab()
+
     def _load_item_from_txt(self, txt_path):
         folder = os.path.dirname(txt_path)
         data = {}
@@ -251,7 +420,15 @@ class DnDApp(tk.Tk):
             "mind": get_int("mind"),
             "soul": get_int("soul"),
             "unconscious": get_int("unconscious"),
-            "extra": {k: v for k, v in data.items() if k not in ["name", "body", "mind", "soul", "unconscious"]},
+            "body health": get_int("body health"),
+            "mind health": get_int("mind health"),
+            "soul health": get_int("soul health"),
+            "weapon": data.get("weapon", "no").lower(),
+            "size": data.get("size", "1"),
+            "orientation": data.get("orientation", "vertical"),
+            "grid_row": get_int("grid_row"),
+            "grid_col": get_int("grid_col"),
+            "extra": {k: v for k, v in data.items() if k not in ["name", "body", "mind", "soul", "unconscious", "body health", "mind health", "soul health", "weapon", "size", "orientation", "grid_row", "grid_col"]},
             "image": None,
         }
 
@@ -267,7 +444,7 @@ class DnDApp(tk.Tk):
         row = tk.Frame(self.items_list_frame, bg=DARK_BG)
         row.pack(fill="x", pady=5)
 
-        # Optional image thumbnail
+        # Optional image thumbnail (4x larger: 48*2 = 96)
         img_label = tk.Label(row, bg=DARK_BG)
         img_label.pack(side="left", padx=5)
 
@@ -275,7 +452,7 @@ class DnDApp(tk.Tk):
             try:
                 from PIL import Image, ImageTk
                 img = Image.open(item["image"])
-                img.thumbnail((48, 48))
+                img.thumbnail((192, 192))
                 photo = ImageTk.PhotoImage(img)
                 img_label.image = photo  # keep reference
                 img_label.configure(image=photo)
@@ -283,7 +460,8 @@ class DnDApp(tk.Tk):
                 pass
 
         # Name + stats
-        text = f"{item['name']}  (B:{item['body']} M:{item['mind']} S:{item['soul']} U:{item['unconscious']})"
+        weapon_marker = " [WEAPON]" if item.get("weapon") == "yes" else ""
+        text = f"{item['name']}{weapon_marker}  (B:{item['body']} M:{item['mind']} S:{item['soul']} U:{item['unconscious']})"
         tk.Label(row, text=text, bg=DARK_BG, fg=DARK_FG, anchor="w").pack(side="left", padx=5)
 
         var = tk.BooleanVar(value=False)
@@ -343,7 +521,7 @@ class DnDApp(tk.Tk):
             text="Campaign Notes",
             bg=DARK_BG,
             fg=DARK_FG,
-            font=("Papyrus", 14, "bold"),
+            font=("Papyrus", 16, "bold"),
         ).pack(pady=10)
 
         container = tk.Frame(self.notes_frame, bg=DARK_BG)
@@ -390,6 +568,34 @@ class DnDApp(tk.Tk):
     def _save_all(self):
         self.stats_wb.save(self.config["files"]["stats_file"])
         self.abilities_wb.save(self.config["files"]["abilities_file"])
+        self._save_item_grid_positions()
+
+    def _save_item_grid_positions(self):
+        """Save grid positions to item.txt files"""
+        for item in self.items:
+            if item.get("grid_row") is not None or item.get("grid_col") is not None:
+                txt_path = os.path.join(item["folder"], "item.txt")
+                try:
+                    # Read existing data
+                    data = {}
+                    if os.path.exists(txt_path):
+                        with open(txt_path, "r", encoding="utf-8") as f:
+                            for line in f:
+                                line = line.strip()
+                                if line and "\t" in line:
+                                    k, v = line.split("\t", 1)
+                                    data[k.strip()] = v.strip()
+                    
+                    # Update grid positions
+                    data["grid_row"] = str(item.get("grid_row", 0))
+                    data["grid_col"] = str(item.get("grid_col", 0))
+                    
+                    # Write back
+                    with open(txt_path, "w", encoding="utf-8") as f:
+                        for k, v in data.items():
+                            f.write(f"{k}\t{v}\n")
+                except Exception as e:
+                    pass  # Silently fail to avoid disrupting the save process
 
     def _load_stats(self):
         self.base_health = {}
@@ -432,16 +638,39 @@ class DnDApp(tk.Tk):
         except ValueError:
             self.charges = 0
 
+    def _auto_load_items(self):
+        """Auto-load all items from the items folder"""
+        items_root = "items"
+        if not os.path.exists(items_root):
+            return
+        
+        for item_name in os.listdir(items_root):
+            item_path = os.path.join(items_root, item_name)
+            if not os.path.isdir(item_path):
+                continue
+            
+            item_txt = os.path.join(item_path, "item.txt")
+            if os.path.exists(item_txt):
+                item = self._load_item_from_txt(item_txt)
+                if item:
+                    # Check if this item already exists (to avoid duplicates)
+                    if not any(i["name"] == item["name"] for i in self.items):
+                        self.items.append(item)
+
     # ---------- Intro / Name ----------
     def _recompute_item_mods(self):
         # Reset mods
         self.item_mods = {"body": 0, "mind": 0, "soul": 0, "unconscious": 0}
+        self.health_stat_mods = {"Body Health": 0, "Mind Health": 0, "Soul Health": 0}
         for item in self.items:
             if item["name"] in self.active_items:
                 self.item_mods["body"] += item["body"]
                 self.item_mods["mind"] += item["mind"]
                 self.item_mods["soul"] += item["soul"]
                 self.item_mods["unconscious"] += item["unconscious"]
+                self.health_stat_mods["Body Health"] += item["body health"]
+                self.health_stat_mods["Mind Health"] += item["mind health"]
+                self.health_stat_mods["Soul Health"] += item["soul health"]
         self._recompute_display_health()
         self._update_abilities_state()
 
@@ -450,13 +679,19 @@ class DnDApp(tk.Tk):
             base = self.base_health.get(stat, 0)
             key = stat.lower()
             bonus = self.item_mods.get(key, 0)
+            health_stat_key = f"{stat} Health"
+            health_bonus = self.health_stat_mods.get(health_stat_key, 0)
             max_hp = self.max_health[stat]
-            effective = max(0, min(max_hp, base + bonus))
+            effective_max = max(1, max_hp + health_bonus)  # Add health stat modifier
+            effective = max(0, min(effective_max, base + bonus))
             self.stat_health[stat] = effective
             if stat in self.health_bars:
                 self.health_bars[stat].set(effective)
+                # Update the progress bar's maximum if the widget exists
+                if stat in self.health_bar_widgets:
+                    self.health_bar_widgets[stat].configure(maximum=effective_max)
             if stat in self.health_labels:
-                self.health_labels[stat].set(f"{effective}/{max_hp}")
+                self.health_labels[stat].set(f"{effective}/{effective_max}")
 
 
     def _handle_name_and_intro(self):
@@ -524,12 +759,39 @@ class DnDApp(tk.Tk):
         header = tk.Frame(self, bg=DARK_BG)
         header.place(relx=1.0, rely=0.0, anchor="ne")
 
+        # Dice rollers
+        dice_frame = tk.Frame(header, bg=DARK_BG)
+        dice_frame.pack(side="left", padx=10)
+
+        tk.Label(
+            dice_frame,
+            text="Dice:",
+            bg=DARK_BG,
+            fg=DARK_FG,
+            font=("Papyrus", 12, "bold"),
+        ).pack(side="left", padx=(0, 5))
+
+        for dice in [2, 4, 6, 8, 10, 20, 100]:
+            tk.Button(
+                dice_frame,
+                text=f"D{dice}",
+                command=lambda d=dice: self._roll_dice(d),
+                bg="#1e1e1e",
+                fg=DARK_FG,
+                font=("Papyrus", 10),
+                width=4,
+            ).pack(side="left", padx=2)
+
+        # Separator
+        tk.Label(header, text="|", bg=DARK_BG, fg=DARK_FG, font=("Papyrus", 12)).pack(side="left", padx=5)
+
+        # Charges
         tk.Label(
             header,
             text="Charges Available:",
             bg=DARK_BG,
             fg=DARK_FG,
-            font=("Papyrus", 10, "bold"),
+            font=("Papyrus", 12, "bold"),
         ).pack(side="left", padx=(0, 5))
 
         tk.Label(
@@ -537,8 +799,12 @@ class DnDApp(tk.Tk):
             textvariable=self.charges_var,
             bg=DARK_BG,
             fg=ACCENT,
-            font=("Papyrus", 10, "bold"),
+            font=("Papyrus", 12, "bold"),
         ).pack(side="left")
+
+    def _roll_dice(self, dice_sides):
+        result = random.randint(1, dice_sides)
+        messagebox.showinfo(f"D{dice_sides} Roll", f"You rolled: {result}")
 
     # ---------- Stats & Health Tab ----------
 
@@ -548,7 +814,7 @@ class DnDApp(tk.Tk):
             text="Stats & Health",
             bg=DARK_BG,
             fg=DARK_FG,
-            font=("Papyrus", 14, "bold"),
+            font=("Papyrus", 16, "bold"),
         ).pack(pady=10)
 
         tab_container = tk.Frame(self.stats_frame, bg=DARK_BG)
@@ -564,7 +830,7 @@ class DnDApp(tk.Tk):
             command=save_and_quit,
             bg="white",
             fg="black",
-            font=("Papyrus", 16, "bold")
+            font=("Papyrus", 18, "bold")
         ).place(relx=0.98, rely=0.98, anchor="se")
 
 
@@ -598,6 +864,7 @@ class DnDApp(tk.Tk):
 
             bar.pack(side="left", padx=5)
             self.health_bars[stat] = bar_var
+            self.health_bar_widgets[stat] = bar
 
             label_var = tk.StringVar(value=f"{current_hp}/{max_hp}")
             lbl = tk.Label(row, textvariable=label_var, bg=DARK_BG, fg=DARK_FG, width=8)
@@ -628,8 +895,11 @@ class DnDApp(tk.Tk):
         if stat == "Unconscious":
             return
         max_hp = self.max_health[stat]
+        health_stat_key = f"{stat} Health"
+        health_bonus = self.health_stat_mods.get(health_stat_key, 0)
+        effective_max = max(1, max_hp + health_bonus)
         base = self.base_health.get(stat, 0)
-        new_base = max(0, min(max_hp, base + delta))
+        new_base = max(0, min(effective_max, base + delta))
         self.base_health[stat] = new_base
 
         # Save base to Excel
@@ -664,7 +934,7 @@ class DnDApp(tk.Tk):
             text="INVALID",
             bg=DARK_BG,
             fg=ERROR_COLOR,
-            font=("Papyrus", 48, "bold")
+            font=("Papyrus", 50, "bold")
         ).pack(pady=20)
 
         tk.Label(
@@ -672,7 +942,7 @@ class DnDApp(tk.Tk):
             text="You have lost two or more stats.",
             bg=DARK_BG,
             fg=DARK_FG,
-            font=("Papyrus", 20)
+            font=("Papyrus", 22)
         ).pack(pady=10)
 
         btn_frame = tk.Frame(container, bg=DARK_BG)
@@ -726,7 +996,7 @@ class DnDApp(tk.Tk):
             text="You are left to rot...",
             bg="black",
             fg="red",
-            font=("Papyrus", 48, "bold")
+            font=("Papyrus", 50, "bold")
         )
         label.pack(expand=True)
 
@@ -741,7 +1011,7 @@ class DnDApp(tk.Tk):
             command=revive_action,
             bg="white",
             fg="black",
-            font=("Papyrus", 16, "bold")
+            font=("Papyrus", 18, "bold")
         ).place(relx=0.98, rely=0.02, anchor="ne")
 
         # Quit button (bottom-left corner)
@@ -751,7 +1021,7 @@ class DnDApp(tk.Tk):
             command=self.destroy,
             bg="white",
             fg="black",
-            font=("Papyrus", 16, "bold")
+            font=("Papyrus", 18, "bold")
         ).place(relx=0.02, rely=0.98, anchor="sw")
 
 
@@ -769,7 +1039,7 @@ class DnDApp(tk.Tk):
             text="Abilities",
             bg=DARK_BG,
             fg=DARK_FG,
-            font=("Papyrus", 14, "bold"),
+            font=("Papyrus", 16, "bold"),
         ).pack(side="left", padx=10)
 
         body = tk.Frame(self.abilities_frame, bg=DARK_BG)
@@ -887,7 +1157,7 @@ class DnDApp(tk.Tk):
             text="NEW ITEM ACQUIRED!",
             bg=DARK_BG,
             fg=DARK_FG,
-            font=("Papyrus", 14, "bold"),
+            font=("Papyrus", 16, "bold"),
         ).pack(pady=10)
 
         tk.Label(
@@ -909,7 +1179,7 @@ class DnDApp(tk.Tk):
         form.pack(pady=10)
 
         # Health modifiers for Mind, Body, Soul
-        tk.Label(form, text="Health Modifiers", bg=DARK_BG, fg=DARK_FG, font=("Papyrus", 10, "bold")).grid(
+        tk.Label(form, text="Health Modifiers", bg=DARK_BG, fg=DARK_FG, font=("Papyrus", 12, "bold")).grid(
             row=0, column=0, columnspan=2, pady=(0, 5), sticky="w"
         )
 
@@ -932,7 +1202,7 @@ class DnDApp(tk.Tk):
         )
 
         # Level modifiers for all stats
-        tk.Label(form, text="Level Modifiers", bg=DARK_BG, fg=DARK_FG, font=("Papyrus", 10, "bold")).grid(
+        tk.Label(form, text="Level Modifiers", bg=DARK_BG, fg=DARK_FG, font=("Papyrus", 12, "bold")).grid(
             row=5, column=0, columnspan=2, pady=(10, 5), sticky="w"
         )
 
